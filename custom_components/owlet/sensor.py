@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
+from datetime import datetime
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -10,10 +12,10 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     PERCENTAGE,
     SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
+    EntityCategory,
     UnitOfTemperature,
     UnitOfTime,
 )
@@ -21,12 +23,14 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import StateType
 
-from .const import DOMAIN, SLEEP_STATES
-from .coordinator import OwletCoordinator
+from .const import SLEEP_STATES
+from .coordinator import OwletConfigEntry, OwletCoordinator
 from .entity import OwletBaseEntity
 
+PARALLEL_UPDATES = 0
 
-@dataclass(kw_only=True)
+
+@dataclass(frozen=True, kw_only=True)
 class OwletSensorEntityDescription(SensorEntityDescription):
     """Represent the owlet sensor entity description."""
 
@@ -100,34 +104,57 @@ SENSORS: tuple[OwletSensorEntityDescription, ...] = (
     ),
 )
 
+SLEEP_STATE_DESCRIPTION = OwletSensorEntityDescription(
+    key="sleep_state",
+    translation_key="sleepstate",
+    device_class=SensorDeviceClass.ENUM,
+    options=list(SLEEP_STATES.values()),
+    available_during_charging=False,
+)
+
+OXYGEN_AVERAGE_DESCRIPTION = OwletSensorEntityDescription(
+    key="oxygen_10_av",
+    translation_key="o2saturation10a",
+    native_unit_of_measurement=PERCENTAGE,
+    icon="mdi:leaf",
+    available_during_charging=False,
+    state_class=SensorStateClass.MEASUREMENT,
+)
+
+LAST_UPDATED_DESCRIPTION = SensorEntityDescription(
+    key="last_updated",
+    translation_key="lastupdated",
+    device_class=SensorDeviceClass.TIMESTAMP,
+    entity_category=EntityCategory.DIAGNOSTIC,
+    # Changes on every poll, so it is opt-in to keep the recorder small.
+    entity_registry_enabled_default=False,
+)
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    config_entry: ConfigEntry,
+    config_entry: OwletConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up the owlet sensors from config entry."""
+    sensors: list[SensorEntity] = []
 
-    coordinators: list[OwletCoordinator] = list(
-        hass.data[DOMAIN][config_entry.entry_id].values()
-    )
-
-    sensors = []
-
-    for coordinator in coordinators:
-        sensors.extend([
+    for coordinator in config_entry.runtime_data.values():
+        properties = coordinator.sock.properties
+        sensors.extend(
             OwletSensor(coordinator, sensor)
             for sensor in SENSORS
-            if sensor.key in coordinator.sock.properties
-        ])
+            if sensor.key in properties
+        )
 
-        if OwletSleepSensor.entity_description.key in coordinator.sock.properties:
-            sensors.append(OwletSleepSensor(coordinator))
-        if (
-            OwletOxygenAverageSensor.entity_description.key
-            in coordinator.sock.properties
-        ):
-            sensors.append(OwletOxygenAverageSensor(coordinator))
+        if SLEEP_STATE_DESCRIPTION.key in properties:
+            sensors.append(OwletSleepSensor(coordinator, SLEEP_STATE_DESCRIPTION))
+        if OXYGEN_AVERAGE_DESCRIPTION.key in properties:
+            sensors.append(
+                OwletOxygenAverageSensor(coordinator, OXYGEN_AVERAGE_DESCRIPTION)
+            )
+        if coordinator.vitals_updated_at is not None:
+            sensors.append(OwletLastUpdatedSensor(coordinator))
 
     async_add_entities(sensors)
 
@@ -135,85 +162,60 @@ async def async_setup_entry(
 class OwletSensor(OwletBaseEntity, SensorEntity):
     """Representation of an Owlet sensor."""
 
+    entity_description: OwletSensorEntityDescription
+
     def __init__(
         self,
         coordinator: OwletCoordinator,
         description: OwletSensorEntityDescription,
     ) -> None:
         """Initialize the sensor."""
-        super().__init__(coordinator)
-        self.entity_description: OwletSensorEntityDescription = description
-        self._attr_unique_id = f"{self.sock.serial}-{description.key}"
-
-    @property
-    def available(self) -> bool:
-        """Return if entity is available."""
-        return super().available and (
-            not self.sock.properties["charging"]
-            or self.entity_description.available_during_charging
-        )
+        super().__init__(coordinator, description.key)
+        self.entity_description = description
+        self._available_during_charging = description.available_during_charging
+        # Live readings must not be shown once the cloud stops receiving them.
+        self._requires_fresh_vitals = not description.available_during_charging
 
     @property
     def native_value(self) -> StateType:
         """Return sensor value."""
-
-        return self.sock.properties[self.entity_description.key]
+        value = self.sock.properties.get(self.entity_description.key)
+        if isinstance(value, float) and not math.isfinite(value):
+            return None
+        return value
 
 
 class OwletSleepSensor(OwletSensor):
     """Representation of an Owlet sleep sensor."""
 
-    _attr_options = list(SLEEP_STATES.values())
-    entity_description = OwletSensorEntityDescription(
-        key="sleep_state",
-        translation_key="sleepstate",
-        device_class=SensorDeviceClass.ENUM,
-        available_during_charging=False,
-    )
-
-    def __init__(
-        self,
-        coordinator: OwletCoordinator,
-    ) -> None:
-        """Initialize the sensor."""
-        super().__init__(coordinator, self.entity_description)
-
     @property
     def native_value(self) -> StateType:
         """Return sensor value."""
-        return SLEEP_STATES[self.sock.properties["sleep_state"]]
+        return SLEEP_STATES.get(self.sock.properties.get("sleep_state"))
 
 
 class OwletOxygenAverageSensor(OwletSensor):
-    """Representation of an Owlet sleep sensor."""
-
-    entity_description = OwletSensorEntityDescription(
-        key="oxygen_10_av",
-        translation_key="o2saturation10a",
-        native_unit_of_measurement=PERCENTAGE,
-        icon="mdi:leaf",
-        available_during_charging=False,
-        state_class=SensorStateClass.MEASUREMENT,
-    )
-
-    def __init__(
-        self,
-        coordinator: OwletCoordinator,
-    ) -> None:
-        """Initialize the sensor."""
-        super().__init__(coordinator, self.entity_description)
+    """Representation of the Owlet 10 minute oxygen average sensor."""
 
     @property
-    def available(self) -> bool:
-        """Return if entity is available."""
-        return (
-            super().available
-            and (
-                not self.sock.properties["charging"]
-                or self.entity_description.available_during_charging
-            )
-            and (
-                self.sock.properties["oxygen_10_av"] >= 0
-                and self.sock.properties["oxygen_10_av"] <= 100
-            )
-        )
+    def native_value(self) -> StateType:
+        """Return sensor value, the sock reports 255 until an average exists."""
+        value = self.sock.properties.get("oxygen_10_av")
+        if not isinstance(value, (int, float)) or not 0 <= value <= 100:
+            return None
+        return value
+
+
+class OwletLastUpdatedSensor(OwletBaseEntity, SensorEntity):
+    """Timestamp of the last vitals the Owlet cloud received from the sock."""
+
+    entity_description = LAST_UPDATED_DESCRIPTION
+
+    def __init__(self, coordinator: OwletCoordinator) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, LAST_UPDATED_DESCRIPTION.key)
+
+    @property
+    def native_value(self) -> datetime | None:
+        """Return sensor value."""
+        return self.coordinator.vitals_updated_at

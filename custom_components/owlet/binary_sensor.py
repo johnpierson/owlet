@@ -9,16 +9,18 @@ from homeassistant.components.binary_sensor import (
     BinarySensorEntity,
     BinarySensorEntityDescription,
 )
-from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN
-from .coordinator import OwletCoordinator
+from .const import SLEEP_STATES
+from .coordinator import OwletConfigEntry, OwletCoordinator
 from .entity import OwletBaseEntity
 
+PARALLEL_UPDATES = 0
 
-@dataclass(kw_only=True)
+
+@dataclass(frozen=True, kw_only=True)
 class OwletBinarySensorEntityDescription(BinarySensorEntityDescription):
     """Represent the owlet binary sensor entity description."""
 
@@ -94,26 +96,41 @@ SENSORS: tuple[OwletBinarySensorEntityDescription, ...] = (
     ),
 )
 
+AWAKE_DESCRIPTION = OwletBinarySensorEntityDescription(
+    key="sleep_state",
+    translation_key="awake",
+    icon="mdi:sleep",
+    available_during_charging=False,
+)
+
+STALE_DESCRIPTION = BinarySensorEntityDescription(
+    key="vitals_stale",
+    translation_key="vitals_stale",
+    device_class=BinarySensorDeviceClass.PROBLEM,
+    entity_category=EntityCategory.DIAGNOSTIC,
+)
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    config_entry: ConfigEntry,
+    config_entry: OwletConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up the owlet sensors from config entry."""
+    sensors: list[BinarySensorEntity] = []
 
-    coordinators: OwletCoordinator = hass.data[DOMAIN][config_entry.entry_id].values()
-
-    sensors = []
-    for coordinator in coordinators:
-        sensors.extend([
+    for coordinator in config_entry.runtime_data.values():
+        properties = coordinator.sock.properties
+        sensors.extend(
             OwletBinarySensor(coordinator, sensor)
             for sensor in SENSORS
-            if sensor.key in coordinator.sock.properties
-        ])
+            if sensor.key in properties
+        )
 
-        if OwletAwakeSensor.entity_description.key in coordinator.sock.properties:
-            sensors.append(OwletAwakeSensor(coordinator))
+        if AWAKE_DESCRIPTION.key in properties:
+            sensors.append(OwletAwakeSensor(coordinator, AWAKE_DESCRIPTION))
+        if coordinator.vitals_updated_at is not None:
+            sensors.append(OwletStaleSensor(coordinator))
 
     async_add_entities(sensors)
 
@@ -121,49 +138,48 @@ async def async_setup_entry(
 class OwletBinarySensor(OwletBaseEntity, BinarySensorEntity):
     """Representation of an Owlet binary sensor."""
 
+    entity_description: OwletBinarySensorEntityDescription
+
     def __init__(
         self,
         coordinator: OwletCoordinator,
         description: OwletBinarySensorEntityDescription,
     ) -> None:
         """Initialize the binary sensor."""
-        super().__init__(coordinator)
+        super().__init__(coordinator, description.key)
         self.entity_description = description
-        self._attr_unique_id = f"{self.sock.serial}-{description.key}"
+        self._available_during_charging = description.available_during_charging
+        self._requires_fresh_vitals = not description.available_during_charging
 
     @property
-    def available(self) -> bool:
-        """Return if entity is available."""
-        return super().available and (
-            not self.sock.properties["charging"]
-            or self.entity_description.available_during_charging
-        )
-
-    @property
-    def is_on(self) -> bool:
+    def is_on(self) -> bool | None:
         """Return true if the binary sensor is on."""
-
-        return self.sock.properties[self.entity_description.key]
+        value = self.sock.properties.get(self.entity_description.key)
+        return None if value is None else bool(value)
 
 
 class OwletAwakeSensor(OwletBinarySensor):
     """Representation of an Owlet sleep sensor."""
 
-    entity_description = OwletBinarySensorEntityDescription(
-        key="sleep_state",
-        translation_key="awake",
-        icon="mdi:sleep",
-        available_during_charging=False,
-    )
+    @property
+    def is_on(self) -> bool | None:
+        """Return true if awake, unknown if the sock has no sleep state."""
+        state = self.sock.properties.get("sleep_state")
+        if state not in SLEEP_STATES or SLEEP_STATES[state] == "unknown":
+            return None
+        return SLEEP_STATES[state] == "awake"
 
-    def __init__(
-        self,
-        coordinator: OwletCoordinator,
-    ) -> None:
-        """Initialize the sensor."""
-        super().__init__(coordinator, self.entity_description)
+
+class OwletStaleSensor(OwletBaseEntity, BinarySensorEntity):
+    """Problem sensor that turns on when the cloud stops receiving vitals."""
+
+    entity_description = STALE_DESCRIPTION
+
+    def __init__(self, coordinator: OwletCoordinator) -> None:
+        """Initialize the binary sensor."""
+        super().__init__(coordinator, STALE_DESCRIPTION.key)
 
     @property
     def is_on(self) -> bool:
-        """Return true if the binary sensor is on."""
-        return self.sock.properties[self.entity_description.key] not in [8, 15]
+        """Return true if the readings stopped updating."""
+        return self.coordinator.vitals_stale

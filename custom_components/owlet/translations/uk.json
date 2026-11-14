@@ -9,18 +9,19 @@
         }
       },
       "reauth_confirm": {
-        "title": "Reauthentiaction required for Owlet",
+        "title": "Reauthentication required for Owlet",
         "data": {
           "password": "Password"
-        }
+        },
+        "description": "Enter the password for {username}"
       }
     },
     "error": {
       "cannot_connect": "Failed to connect",
-      "invalid_email": "Entered email address is incorrect",
-      "invalid_password": "Entered password is incorrect",
-      "invalid_credentials": "Entered credentials are incorrect",
-      "unknown": "Unknown error occured"
+      "invalid_credentials": "Email, password or region is incorrect",
+      "unknown": "Unknown error occurred",
+      "no_devices": "No supported Owlet sock was found on this account",
+      "auth_failed": "Owlet rejected the sign-in, wait a few minutes and try again"
     },
     "abort": {
       "already_configured": "Device already configured",
@@ -32,7 +33,7 @@
       "init": {
         "title": "Configure options for Owlet",
         "data": {
-          "pollinterval": "Polling interval in seconds, min 10"
+          "scan_interval": "Polling interval in seconds (5 to 3600)"
         }
       }
     }
@@ -74,6 +75,9 @@
       },
       "awake": {
         "name": "Awake"
+      },
+      "vitals_stale": {
+        "name": "Readings stale"
       }
     },
     "sensor": {
@@ -112,6 +116,9 @@
       },
       "movementbucket": {
         "name": "Movement bucket"
+      },
+      "lastupdated": {
+        "name": "Last vitals update"
       }
     },
     "switch": {

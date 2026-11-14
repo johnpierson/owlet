@@ -1,0 +1,2 @@
+pytest-homeassistant-custom-component
+pyowletapi==2025.4.10

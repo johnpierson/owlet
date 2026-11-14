@@ -1,38 +1,59 @@
 """Base class for Owlet entities."""
 
-from homeassistant.helpers.device_registry import DeviceInfo
-from homeassistant.helpers.entity import Entity
+from __future__ import annotations
+
+from homeassistant.helpers.device_registry import (
+    CONNECTION_NETWORK_MAC,
+    DeviceInfo,
+    format_mac,
+)
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN, MANUFACTURER
 from .coordinator import OwletCoordinator
 
 
-class OwletBaseEntity(CoordinatorEntity[OwletCoordinator], Entity):
+class OwletBaseEntity(CoordinatorEntity[OwletCoordinator]):
     """Base class for Owlet Sock entities."""
 
     _attr_has_entity_name = True
 
-    def __init__(
-        self,
-        coordinator: OwletCoordinator,
-    ) -> None:
+    # Entities that only make sense while the sock is worn override these.
+    _available_during_charging = True
+    _requires_fresh_vitals = False
+
+    def __init__(self, coordinator: OwletCoordinator, key: str) -> None:
         """Initialize the base entity."""
         super().__init__(coordinator)
-        self.coordinator = coordinator
         self.sock = coordinator.sock
+        self._key = key
+        self._attr_unique_id = f"{self.sock.serial}-{key}"
 
-    @property
-    def device_info(self) -> DeviceInfo:
-        """Return the device info of the device."""
-        return DeviceInfo(
+        mac = format_mac(self.sock.mac) if self.sock.mac else ""
+        connections = (
+            {(CONNECTION_NETWORK_MAC, mac)}
+            if len(mac) == 17 and mac.count(":") == 5
+            else set()
+        )
+        self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, self.sock.serial)},
+            connections=connections,
             name=f"Owlet Sock {self.sock.serial}",
-            connections={("mac", getattr(self.sock, "mac", "unknown"))},
             suggested_area="Nursery",
             configuration_url="https://my.owletcare.com/",
-            manufacturer="Owlet Baby Care",
-            model=getattr(self.sock, "model", None),
-            sw_version=getattr(self.sock, "sw_version", None),
-            hw_version=getattr(self.sock, "hw_version", "3r8"),
+            manufacturer=MANUFACTURER,
+            model=self.sock.model or None,
+            sw_version=self.sock.sw_version,
         )
+
+    @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        if not super().available:
+            return False
+        properties = self.sock.properties
+        if not self._available_during_charging and properties.get("charging"):
+            return False
+        if self._requires_fresh_vitals and self.coordinator.vitals_stale:
+            return False
+        return True

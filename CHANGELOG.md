@@ -1,6 +1,33 @@
 # Changelog
 
 <!--next-version-placeholder-->
+## 2026.11.0 (2026-11-13)
+
+First release of the [johnpierson/owlet](https://github.com/johnpierson/owlet) fork of the archived upstream.
+
+### Fix
+* Options flow no longer sets `config_entry` itself, which stopped working in Home Assistant 2025.12 (upstream #27).
+* Entity descriptions are frozen dataclasses, as required by current Home Assistant.
+* Pinned `pyowletapi==2025.4.10` and removed imports that no longer exist in it. The upstream 2025.4.3 release shipped a pin that made the config flow fail with "Invalid handler specified" (upstream #29).
+* An expired sign-in during polling raised `KeyError: 'email'` instead of starting re-authentication.
+* Temporary Owlet server errors during a token refresh are retried instead of demanding the password again.
+* Refreshed tokens are always saved, so a restart does not start from stale tokens.
+* One device that cannot be read (for example an Owlet Cam) no longer stops the socks on the same account from being set up.
+* Failing to set `APP_ACTIVE` no longer discards readings that are available.
+* Malformed or missing properties fail a single poll instead of crashing the entity or the coordinator.
+* The same email can be configured for both regions; existing entries are migrated (upstream PR #30, thanks [`@mLupine`](https://github.com/mLupine)).
+* Changing the polling interval now takes effect immediately, and its label is shown in the options dialog.
+* The "Awake" sensor reports unknown instead of "awake" when the sock has no sleep state; unrecognised sleep states no longer raise.
+* The base station switch refreshes after a command and reports failures.
+* Removed the invented `3r8` hardware version and the `unknown` MAC connection from the device entry.
+* Sign-in now checks a supported sock exists and reports connection problems separately from wrong credentials.
+
+### Feature
+* Frozen readings are detected (upstream #31): when the Owlet cloud has not received vitals for 5 minutes, a new "Readings stale" problem sensor turns on and the vitals become unavailable rather than showing old numbers.
+* Requests have timeouts, and the extra "is my token valid" request before every API call is gone, halving the load on the Owlet cloud.
+* "Last vitals update" timestamp sensor (disabled by default) and downloadable diagnostics.
+* Bundled brand icons, test suite that runs against real Home Assistant, CI.
+
 ## 2025.4.3 (2025-04-15)
 ### Fix
 * Changes to how the sensors are stored to solve the issue where only one device is added, thanks [`@MarjovanLier`](https://github.com/MarjovanLier). ([`1244bff`](https://github.com/ryanbdclark/owlet/commit/1244bffcb48d7337a9d7a0da518959fe4b31a230))
